@@ -7,8 +7,13 @@ __pycache__/
 .vscode
 
 pre*
+csv_data
+errs
+logs
 logs_runs
 logs_perf
+mysh
+code_version
 hessian*
 datasets/cifar-10*
 datasets/tiny-imagenet*
@@ -19,3 +24,4 @@ logs*
 *.jpg
 # *.pdf
 *.pt
+*.csv

@@ -2,6 +2,7 @@
 import os
 import time
 import torch
+import copy
 import random
 import datetime
 import argparse
@@ -56,21 +57,18 @@ def get_args():
 def add_identity(args, dir_path):
     # set output file name and path, etc. 
     args.identity = (f"{args.dataset_name}s{args.image_size}-"+
-                     f"{args.batch_size}-"+
+                     f"bs{args.batch_size}-"+
                      f"{args.mode}-"+
                      f"{args.shuffle}-"+
-                     f"{args.size}-"+
+                     f"n{args.size}-"+
                      f"{args.model}-"+
-                     f"{args.pretrained}-"+
-                     f"{args.lr}-"+
-                     f"{args.wd}-"+
-                     f"{args.gamma}-"+  
-                     f"{args.momentum}-"+ 
+                     f"p{args.pretrained}-"+
+                     f"lr{args.lr}-"+ 
                      f"{args.warmup_step}-"+ 
-                     f"{args.epoch}-"+      
-                     f"{args.early_stop}-"+ 
-                     f"{args.seed}-"+
-                     f"{args.amp}"
+                     f"epoch{args.epoch}-"+      
+                     f"{args.optimization}_"+
+                     f"mgsStep_{args.gossip_step}-"+
+                     f"mlg_{args.multiple_local_gossip}-"
                      )       
     args.logs_perf_dir = os.path.join(dir_path,'logs_perf')
     if not os.path.exists(args.logs_perf_dir):
@@ -98,7 +96,7 @@ def eval_vision(model, train_loader, valid_loader, epoch, iteration, tb, device)
     criterion=nn.CrossEntropyLoss()
     model.eval()
 
-    print(f"\r")
+    # print(f"\r")
     total_loss, total_correct, total, step = 0, 0, 0, 0
     start = datetime.datetime.now()
     for batch in train_loader:
@@ -111,11 +109,11 @@ def eval_vision(model, train_loader, valid_loader, epoch, iteration, tb, device)
         loss = criterion(output, target)
         total_loss += loss.item()
         end = datetime.datetime.now()
-        print(f"\r"+f"| Evaluate Train | step: {step}, time: {(end - start).seconds}s", flush=True, end="")
+        # print(f"\r"+f"| Evaluate Train | step: {step}, time: {(end - start).seconds}s", flush=True, end="")
     total_train_loss = total_loss / step
     total_train_acc = total_correct / total
 
-    print(f"\r")
+    # print(f"\r")
     total_loss, total_correct, total, step = 0, 0, 0, 0
     for batch in valid_loader:
         step += 1
@@ -127,7 +125,7 @@ def eval_vision(model, train_loader, valid_loader, epoch, iteration, tb, device)
         loss = criterion(output, target)
         total_loss += loss.item()
         end = datetime.datetime.now()
-        print(f"\r| Evaluate Valid | step: {step}, time: {(end - start).seconds}s", flush=True, end="")
+        # print(f"\r| Evaluate Valid | step: {step}, time: {(end - start).seconds}s", flush=True, end="")
     total_valid_loss = total_loss / step
     total_valid_acc = total_correct / total
 
@@ -266,3 +264,19 @@ def PermutationMatrix(size):
     PermutedMatrix = np.take(IdentityMatrix, Permutation, axis=0)
     
     return PermutedMatrix
+
+def CalculateConsensus(center_model, worker_list, size):
+    consensus_distance = 0
+    for name, param in center_model.named_parameters():
+        for worker in worker_list[1:]:
+            consensus_distance += torch.sum(abs(param.data - worker.model.state_dict()[name].data))
+        consensus_distance /= size
+    return consensus_distance
+
+def CalculateCenter(center_model, worker_list, size):
+    center_model = copy.deepcopy(worker_list[0].model)
+    for name, param in center_model.named_parameters():
+        for worker in worker_list[1:]:
+            param.data += worker.model.state_dict()[name].data
+        param.data /= size
+    return center_model
