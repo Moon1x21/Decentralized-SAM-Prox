@@ -134,11 +134,6 @@ def eval_vision(model, train_loader, valid_loader, epoch, iteration, tb, device)
     total_valid_acc = total_correct / total
 
     if epoch is None:
-        wandb.log({
-            'valid loss - train loss',total_valid_loss - total_train_loss,
-            'valid loss', total_valid_loss,
-            'train loss', total_train_loss
-        })
         tb.add_scalar("valid loss - train loss", total_valid_loss - total_train_loss, iteration)
         tb.add_scalar("valid loss", total_valid_loss, iteration)
         tb.add_scalar("train loss", total_train_loss, iteration)
