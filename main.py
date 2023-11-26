@@ -160,7 +160,7 @@ def main(args):
 
         # multiple local gossip stage to make consensus.
         if (args.multiple_local_gossip) and (args.mode != 'csgd'):
-            if((if args.optimization == 'sam') osr (args.optimization =='samprox' and iteration % args.gossip_step == 0)):
+            if((args.optimization == 'sam') or (args.optimization =='samprox' and iteration % args.gossip_step == 0)):
                 current_distance = threshold
                 current_iteration = 0
                 while current_distance <  4: 
@@ -247,7 +247,7 @@ if __name__=='__main__':
     parser.add_argument("--amp", action='store_true', help='automatic mixed precision')
 
     # concensus distance parameter
-    parser.add_argument("--gossip_step", type='int', default='300')
+    parser.add_argument("--gossip_step", type=int, default=300)
     # parser.add_argument("--only_dec", action='store_true', help='only control consensus distance in decay pahse')
 
 
