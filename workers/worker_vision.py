@@ -80,6 +80,28 @@ class Worker_Vision:
         self.optimizer.zero_grad()
         smaproxloss(self.model(data),target, self.model,server,mu).backward() # gradient 
         self.sam_optimizer.descent_step()
+                    
+    def step_samprox2(self,server,mu):
+        self.model.train()
+        
+        batch = next(self.train_loader_iter)
+        data, target = batch[0].to(self.device), batch[1].to(self.device)
+        output = self.model(data)
+        loss = criterion(output, target)
+        self.optimizer.zero_grad()
+        loss.backward() # gradient 구함.
+        self.sam_optimizer.ascent_step()
+        
+        
+        self.optimizer.zero_grad()
+        criterion(self.model(data),target).backward() # gradient
+
+        for n, p in self.model.named_parameters():
+            if p.grad is None:
+                continue
+            p.grad.add_(mu*(p.data-server[n].data))
+         
+        self.sam_optimizer.descent_step()
 
     def step_csgd(self):
         self.model.train()
