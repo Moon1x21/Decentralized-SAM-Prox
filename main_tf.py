@@ -16,8 +16,6 @@ from utils.scheduler import *
 from utils.utils import *
 from utils.minimizers import SAM
 
-import wandb
-
 os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 dir_path = os.path.dirname(__file__)
 
@@ -36,24 +34,13 @@ def main(args):
     elif os.path.exists(nfs_dataset_path2):
         args.dataset_path = nfs_dataset_path2
 
-    log_id = datetime.datetime.now().strftime('%b%d') + '_' + args.dataset_name + '_' + args.optimization + '_'+ args.mode
-    if(args.multiple_local_gossip):
-        log_name = args.optimization + '-' + args.mode + '-MGS_' + str(args.gossip_step)+'-local_'+str(args.local_iter)
-    else:
-        log_name = args.optimization + '-' + args.mode +'-local_'+str(args.local_iter)
-        
-    wandb.init(project=log_id)
-
-    wandb.run.name = log_name
-
-    wandb.config.update(args)
+    log_id = datetime.datetime.now().strftime('%b%d_%H:%M:%S') + '_' + args.identity
+    writer = SummaryWriter(log_dir=os.path.join(args.runs_data_dir, log_id))
 
     probe_train_loader, probe_valid_loader, _, classes = load_dataset(root=args.dataset_path, name=args.dataset_name, image_size=args.image_size,
                                                                     train_batch_size=32, valid_batch_size=32)
     worker_list = []
     split = [1.0 / args.size for _ in range(args.size)]
-    temp_valid = 0
-    temp_iteration = 0
     for rank in range(args.size):
         train_loader, _, _, classes = load_dataset(root=args.dataset_path, name=args.dataset_name, image_size=args.image_size, 
                                                     train_batch_size=args.batch_size, 
@@ -115,7 +102,7 @@ def main(args):
                         worker.step_sam()
 
                     elif(args.optimization == 'samprox'):
-                        worker.step_samprox2(server,args.mu)
+                        worker.step_samprox(server,args.mu)
 
                     worker.update_grad() # -gradient
                     model_dict_list.append(worker.model.state_dict()) # update된 model weigth 들어감,
@@ -133,86 +120,69 @@ def main(args):
             # Main virutal global model update and calculating consensus distance
             center_model = CalculateCenter(center_model, worker_list, args.size)
 
-            if iteration % 50 == 0:    
+            if iteration % 500 == 0:    
                 start_time = datetime.datetime.now() 
                 eval_iteration = iteration
                 if args.amp:
                     train_acc, train_loss, valid_acc, valid_loss = eval_vision_amp(center_model, probe_train_loader, probe_valid_loader,
-                                                                                None, iteration, wandb, args.device)                    
+                                                                                None, iteration, writer, args.device)                    
                 else:
                     train_acc, train_loss, valid_acc, valid_loss = eval_vision(center_model, probe_train_loader, probe_valid_loader,
-                                                                                None, iteration, wandb, args.device)
-                # print(f"\n|\033[0;31m Iteration:{iteration}|{args.early_stop}, epoch: {epoch}|{args.epoch},\033[0m",
-                        # f'train loss:{train_loss:.4}, acc:{train_acc:.4%}, '
-                        # f'valid loss:{valid_loss:.4}, acc:{valid_acc:.4%}.',
-                        # flush=True, end="\n")
-                if temp_valid < valid_acc :
-                    temp_valid = valid_acc
-                    temp_iteration = iteration
+                                                                                None, iteration, writer, args.device)
+                print(f"\n|\033[0;31m Iteration:{iteration}|{args.early_stop}, epoch: {epoch}|{args.epoch},\033[0m",
+                        f'train loss:{train_loss:.4}, acc:{train_acc:.4%}, '
+                        f'valid loss:{valid_loss:.4}, acc:{valid_acc:.4%}.',
+                        flush=True, end="\n")
             else:
-                end_time = datetime.datetime.now()
-                # print(f"\r|\033[0;31m Iteration:{eval_iteration}-{iteration}, time: {(end_time - start_time).seconds}s\033[0m", flush=True, end="")
-            # iteration += 1
-            # Calculate Current Consensus distance (threshold)        
-            threshold = CalculateConsensus(center_model, worker_list, args.size)
-
-            # multiple local gossip stage to make consensus.
-            if (args.multiple_local_gossip) and (args.mode != 'csgd'):
-                if((iteration % args.gossip_step == 0)):
-                    current_distance = threshold
-                    current_iteration = 0
-                    while current_distance <  4: 
-                        if current_iteration > 4:
-                            break
-                        model_dict_list_ = []
-                        for worker in worker_list:
-                            model_dict_list_.append(worker.model.state_dict()) 
-                        current_iteration += 1
-                        
-                        for worker in worker_list:
-                            for name, param in worker.model.named_parameters():
-                                param.data = torch.zeros_like(param.data)
-                                for i in range(args.size):
-                                    p = P_perturbed[worker.rank][i]
-                                    param.data += model_dict_list_[i][name].data * p
-                                
-                    
-                    center_model = CalculateCenter(center_model, worker_list, args.size)
-                    current_distance = CalculateConsensus(center_model, worker_list, args.size)
-                    # writer.add_scalar(f"Consensus distance in iteration {iteration}", current_distance, threshold)
-                    wandb.log({\
-                        'Consensus distance': current_distance,
-                        'threshold' : threshold
-                    })
-                        # print(f"\niteration:{iteration}, threshold:{threshold},  current_distance:{current_distance}, current iteration: {current_iteration}" )
+                end_time = datetime.datetime.now() 
+                print(f"\r|\033[0;31m Iteration:{eval_iteration}-{iteration}, time: {(end_time - start_time).seconds}s\033[0m", flush=True, end="")
             iteration += 1
             if iteration == args.early_stop: 
                 start_time = datetime.datetime.now() 
                 eval_iteration = iteration
                 if args.amp:
                     train_acc, train_loss, valid_acc, valid_loss = eval_vision_amp(center_model, probe_train_loader, probe_valid_loader,
-                                                                                None, iteration, wandb, args.device)                    
+                                                                                None, iteration, writer, args.device)                    
                 else:
                     train_acc, train_loss, valid_acc, valid_loss = eval_vision(center_model, probe_train_loader, probe_valid_loader,
-                                                                                None, iteration, wandb, args.device)
-                # print(f"\n|\033[0;31m Iteration:{iteration}|{args.early_stop}, epoch: {epoch}|{args.epoch},\033[0m",
-                #         f'train loss:{train_loss:.4}, acc:{train_acc:.4%}, '
-                #         f'valid loss:{valid_loss:.4}, acc:{valid_acc:.4%}.',
-                #         flush=True, end="\n")
-                if temp_valid < valid_acc :
-                    temp_valid = valid_acc
-                    temp_iteration = iteration
-                    
-                print(f"\n|\033[0;31m Best Iteration:{temp_iteration}|",
-                        f'Best acc:{temp_valid:.4%}.',
+                                                                                None, iteration, writer, args.device)
+                print(f"\n|\033[0;31m Iteration:{iteration}|{args.early_stop}, epoch: {epoch}|{args.epoch},\033[0m",
+                        f'train loss:{train_loss:.4}, acc:{train_acc:.4%}, '
+                        f'valid loss:{valid_loss:.4}, acc:{valid_acc:.4%}.',
                         flush=True, end="\n")
                 break
         if iteration == args.early_stop: break
 
         
-        
+        # Calculate Current Consensus distance (threshold)        
+        threshold = CalculateConsensus(center_model, worker_list, args.size)
+        writer.add_scalar("Consensus distance", threshold, epoch)
 
-        
+        # multiple local gossip stage to make consensus.
+        if (args.multiple_local_gossip) and (args.mode != 'csgd'):
+            if((args.optimization == 'sam') or (args.optimization =='samprox' and iteration % args.gossip_step == 0)):
+                current_distance = threshold
+                current_iteration = 0
+                while current_distance <  4: 
+                    if current_iteration > 4:
+                        break
+                    model_dict_list_ = []
+                    for worker in worker_list:
+                        model_dict_list_.append(worker.model.state_dict()) 
+                    current_iteration += 1
+                    
+                    for worker in worker_list:
+                        for name, param in worker.model.named_parameters():
+                            param.data = torch.zeros_like(param.data)
+                            for i in range(args.size):
+                                p = P_perturbed[worker.rank][i]
+                                param.data += model_dict_list_[i][name].data * p
+                            
+                
+                center_model = CalculateCenter(center_model, worker_list, args.size)
+                current_distance = CalculateConsensus(center_model, worker_list, args.size)
+                writer.add_scalar(f"Consensus distance in iteration {iteration}", current_distance, threshold)
+                    # print(f"\niteration:{iteration}, threshold:{threshold},  current_distance:{current_distance}, current iteration: {current_iteration}" )
 
     state = {
         'acc': train_acc,
@@ -222,7 +192,8 @@ def main(args):
     if not os.path.exists(args.perf_dict_dir):
         os.mkdir(args.perf_dict_dir)  
     torch.save(state, os.path.join(args.perf_dict_dir, log_id + '.t7'))
-     
+
+    writer.close()        
     print('ending')
 
 if __name__=='__main__':
