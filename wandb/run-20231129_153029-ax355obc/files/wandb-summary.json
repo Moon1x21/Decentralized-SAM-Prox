@@ -1,1 +1,0 @@
-{"valid loss - train loss": 0.0001693163419953514, "valid loss": 1.9307340379708853, "train loss": 1.93056472162889, "valid acc": 0.23357371794871795, "train acc": 0.2306338028169014, "_timestamp": 1701239571.4038856, "_runtime": 141.43382859230042, "_step": 4, "Consensus distance": 0.0, "threshold": 0.0, "_wandb": {"runtime": 147}}
