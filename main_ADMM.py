@@ -11,10 +11,11 @@ from torch.optim import SGD
 from torch.optim.lr_scheduler import MultiStepLR
 from datasets import load_dataset
 from networks import load_model
-from workers.worker_vision import *
+from workers.worker_vision_admm import *
 from utils.scheduler import *
 from utils.utils import *
 from utils.minimizers import SAM
+import pdb
 
 import wandb
 
@@ -35,20 +36,22 @@ def main(args):
         args.dataset_path = nfs_dataset_path1
     elif os.path.exists(nfs_dataset_path2):
         args.dataset_path = nfs_dataset_path2
-    
-    if(not args.debug):
-        log_id = args.exp_name + args.dataset_name + args.mode 
 
-        log_name = args.optimization 
+    log_id = 'ADMM' + args.dataset_name + '_sam_'+ args.mode 
+    # if(args.multiple_local_gossip):
+    #     log_name = args.optimization + '-' + args.mode + '-MGS_' + str(args.gossip_step)+'-local_'+str(args.local_iter)
+    # else:
+    #     log_name = args.optimization + '-' + args.mode +'-local_'+str(args.local_iter)
+    if(args.multiple_local_gossip):
+        log_name = args.optimization+'_MGS_' + str(args.early_stop/args.local_iter)
+    else:
+        log_name = args.optimization + '_' + str(args.early_stop/args.local_iter)
+        
+    wandb.init(project=log_id)
 
-        if(args.sam_scheduler != 'base'):
-            log_name = log_name + '_' + args.sam_scheduler
-            
-        wandb.init(project=log_id)
+    wandb.run.name = log_name
 
-        wandb.run.name = log_name
-
-        wandb.config.update(args)
+    wandb.config.update(args)
 
     probe_train_loader, probe_valid_loader, _, classes = load_dataset(root=args.dataset_path, name=args.dataset_name, image_size=args.image_size,
                                                                     train_batch_size=32, valid_batch_size=32)
@@ -72,7 +75,12 @@ def main(args):
             if args.optimization == "base":
                 worker = Worker_Vision(model, rank, optimizer, scheduler, args.eta, args.rho, train_loader, args.device, False)
             else:
-                worker = Worker_Vision(model, rank, optimizer, scheduler, args.eta, args.rho, train_loader, args.device, True, args.sam_scheduler)
+                dual = model.state_dict()
+                for p in model.parameters():
+                    p = 0
+                dual_y = copy.deepcopy(dual)
+                dual_z = copy.deepcopy(dual)
+                worker = Worker_Vision(model, rank, optimizer, scheduler, args.eta, args.rho, train_loader, args.device, dual_y, dual_z,True)
         #worker_list.append(DDP(worker, device_ids=[gpu_id]]))
         worker_list.append(worker)
 
@@ -82,17 +90,14 @@ def main(args):
 
     center_model = CalculateCenter(center_model, worker_list, args.size)
 
+    # Calculating Consensusdistance
+    threshold = CalculateConsensus(center_model, worker_list, args.size)
+
     P = generate_P(args.mode, args.size) # generate gossip matrix
     iteration = 0
     for epoch in range(args.epoch):  
         for worker in worker_list:
-            worker.update_iter()  
-            if(args.optimization == 'samAdmm'):
-                dual_y_list = []
-                dual_z_list = []
-                for worker in worker_list:
-                    dual_y_list.append(worker.dual_y.state_dict())
-                    dual_z_list.append(worker.dual_y.state_dict()) 
+            worker.update_iter()   
         for _ in range(train_loader.__len__()):
             if args.mode == 'csgd':
                 for worker in worker_list:
@@ -107,28 +112,14 @@ def main(args):
                     P_perturbed = P
                 model_dict_list = []
 
-                if('VRSAM' in args.optimization):
-                    worker_gradient = []
-                    for worker in worker_list:
-                        worker.step()
-                        grad_dict = {k:v.grad for k,v in worker.model.named_parameters()}
-                        worker_gradient.append(grad_dict)
-                    
-                    for worker in worker_list:
-                        for name, param in worker.model.named_parameters():
-                            param.grad = torch.zeros_like(param.grad)
-                            for i in range(args.size):
-                                p = P_perturbed[worker.rank][i]
-                                param.grad += worker_gradient[i][name] * p  # gossip algorithm. 
-                  
                 # t+1/2 step
                 for worker in worker_list:
-                    # server = copy.deepcopy(worker.model.state_dict())
+                    current_model = copy.deepcopy(worker.model.state_dict())
                     if (args.optimization == 'base'):
                         worker.step()
                     
                     elif (args.optimization == 'prox'):
-                        worker.step_prox(args.mu)
+                        worker.step_prox(current_model,args.mu)
     
                         # print("upgrde")
                     elif(args.optimization == 'sam'):
@@ -136,20 +127,17 @@ def main(args):
                         worker.step_sam()
 
                     elif(args.optimization == 'samprox'):
-                        worker.step_samprox(args.mu)
+                        worker.step_samprox2(current_model,args.mu)
 
-                    elif(args.optimization == 'samAdmm'):
-                        worker.step_samAdmm(args.mu)
-                    
-                    elif(args.optimization == 'VRSAMProx'):
-                        worker.step_proxVR(args.mu)
+                    elif(args.optimization == 'samADMM'):
+                        worker.step_samADMM(current_model,args.mu)
 
-                    elif(args.optimization == 'VRSAM'):
-                        worker.step_VRSAM(args.mu)
-    
-                        
+                    elif(args.optimization == 'samADMM2'):
+                        worker.step_samADMM(current_model,args.mu)
+                        worker.upda
+
                     worker.update_grad() # -gradient
-                    model_dict_list.append(worker.model.state_dict()) # update된 model weigth 들어감,
+                    model_dict_list.append(worker.model.state_dict()) # update된 model weigth 들어감
                 
                 #t+1 step
                 if((iteration % args.local_iter == 0)):
@@ -159,39 +147,64 @@ def main(args):
                             for i in range(args.size):
                                 p = P_perturbed[worker.rank][i]
                                 param.data += model_dict_list[i][name].data * p  # gossip algorithm.  
-                               
-                        worker.update_localprox()
-                        
-                                            
+                
+                
 
             # Main virutal global model update and calculating consensus distance
             center_model = CalculateCenter(center_model, worker_list, args.size)
 
-            if iteration % (args.local_iter) == 0:    
+            if iteration % 50 == 0:    
                 start_time = datetime.datetime.now() 
                 eval_iteration = iteration
                 if args.amp:
                     train_acc, train_loss, valid_acc, valid_loss = eval_vision_amp(center_model, probe_train_loader, probe_valid_loader,
-                                                                                None, iteration, wandb, args.device, args.debug)                    
+                                                                                None, iteration, wandb, args.device)                    
                 else:
                     train_acc, train_loss, valid_acc, valid_loss = eval_vision(center_model, probe_train_loader, probe_valid_loader,
-                                                                                None, iteration, wandb, args.device, args.debug)
-                if(args.debug):
-                    print(f"\n|\033[0;31m Iteration:{iteration}|{args.early_stop}, epoch: {epoch}|{args.epoch},\033[0m",
-                        f'train loss:{train_loss:.4}, acc:{train_acc:.4%}, '
-                        f'valid loss:{valid_loss:.4}, acc:{valid_acc:.4%}.',
-                        flush=True, end="\n")
-                
-                if(args.optimization == ('sam' or 'samprox') and args.sam_scheduler != 'base'):
-                    wandb.log({'rho':worker_list[0].sam_optimizer.rho})
-
+                                                                                None, iteration, wandb, args.device)
+                # print(f"\n|\033[0;31m Iteration:{iteration}|{args.early_stop}, epoch: {epoch}|{args.epoch},\033[0m",
+                        # f'train loss:{train_loss:.4}, acc:{train_acc:.4%}, '
+                        # f'valid loss:{valid_loss:.4}, acc:{valid_acc:.4%}.',
+                        # flush=True, end="\n")
                 if temp_valid < valid_acc :
                     temp_valid = valid_acc
                     temp_iteration = iteration
             else:
                 end_time = datetime.datetime.now()
                 # print(f"\r|\033[0;31m Iteration:{eval_iteration}-{iteration}, time: {(end_time - start_time).seconds}s\033[0m", flush=True, end="")
+            # iteration += 1
+            # Calculate Current Consensus distance (threshold)        
+            threshold = CalculateConsensus(center_model, worker_list, args.size)
 
+            # multiple local gossip stage to make consensus.
+            if (args.multiple_local_gossip) and (args.mode != 'csgd'):
+                if((iteration % args.gossip_step == 0)):
+                    current_distance = threshold
+                    current_iteration = 0
+                    while current_distance <  4: 
+                        if current_iteration > 4:
+                            break
+                        model_dict_list_ = []
+                        for worker in worker_list:
+                            model_dict_list_.append(worker.model.state_dict()) 
+                        current_iteration += 1
+                        
+                        for worker in worker_list:
+                            for name, param in worker.model.named_parameters():
+                                param.data = torch.zeros_like(param.data)
+                                for i in range(args.size):
+                                    p = P_perturbed[worker.rank][i]
+                                    param.data += model_dict_list_[i][name].data * p
+                                
+                    
+                    center_model = CalculateCenter(center_model, worker_list, args.size)
+                    current_distance = CalculateConsensus(center_model, worker_list, args.size)
+                    # writer.add_scalar(f"Consensus distance in iteration {iteration}", current_distance, threshold)
+                    # wandb.log({\
+                    #     'Consensus distance': current_distance,
+                    #     'threshold' : threshold
+                    # })
+                        # print(f"\niteration:{iteration}, threshold:{threshold},  current_distance:{current_distance}, current iteration: {current_iteration}" )
             iteration += 1
             if iteration == args.early_stop: 
                 start_time = datetime.datetime.now() 
@@ -254,14 +267,17 @@ if __name__=='__main__':
     parser.add_argument("--pretrained", type=int, default=0)
 
     #optimization
-    parser.add_argument("--optimization", type=str, default='base', choices=['base', 'prox','sam', 'samprox','VRSAM'])
+    parser.add_argument("--optimization", type=str, default='base', choices=['base', 'prox','sam', 'samprox','samADMM','samADMM2'])
 
     #SAM parameter
     parser.add_argument('--eta', type=float, default=0.01, help='eta value')
     parser.add_argument('--rho', type=float, default=0.5,  help='rho value') 
 
-    parser.add_argument('--mu', type=float, default=0.5,  help='mu value') 
-    parser.add_argument('--sam_scheduler', type=str, default='base', choices=['base','log','step'])
+    parser.add_argument('--mu', type=float, default=1.0,  help='mu value') 
+    
+
+    # multiple gossip stage  
+    parser.add_argument("--multiple_local_gossip", action='store_true', help='Run multiple gossip algorithm')
 
     #local iteration 
     parser.add_argument("--local_iter", type=int, default=1)
@@ -279,10 +295,11 @@ if __name__=='__main__':
     parser.add_argument("--device", type=int, default=0)
     parser.add_argument("--amp", action='store_true', help='automatic mixed precision')
 
-    parser.add_argument("--exp_name", type=str, default='Decentralized')
+    # concensus distance parameter
+    parser.add_argument("--gossip_step", type=int, default=300)
+    # parser.add_argument("--only_dec", action='store_true', help='only control consensus distance in decay pahse')
 
-    #debug
-    parser.add_argument("--debug", action='store_true', help='set debugging mode')
+    parser.add_argument("--exp_name", type=str, default='Decentralized')
 
 
     # test version

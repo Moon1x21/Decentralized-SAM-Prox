@@ -2,8 +2,7 @@
 import torch
 import torch.nn as nn
 import copy
-from utils.minimizers import *
-
+from utils.samopt import *
 
 criterion = nn.CrossEntropyLoss()
 
@@ -20,20 +19,22 @@ smaproxloss = SAMProxLoss()
 
 class Worker_Vision:
     def __init__(self, model, rank, optimizer, scheduler, eta, rho,
-                 train_loader, device, sam=False, scheduling='base'):       
+                 train_loader, device, sam=False):       
         self.model = model
         self.rank = rank
         self.optimizer = optimizer
         self.scheduler = scheduler
         self.train_loader = train_loader
-        self.train_loader_iter = train_loader.__iter__()
+        # self.train_loader_iter = train_loader.__iter__()
         self.device = device
-        self.localprox = model.state_dict()
+        self.localprox = self.model.state_dict()
 
         if(sam):
             self.rho = rho
             self.eta = eta
-            self.sam_optimizer = SAM(self.optimizer, self.model, self.rho, self.eta, scheduling)
+            self.sam_optimizer = SAM(self.optimizer, self.model, self.rho, self.eta)
+            
+
         
     def update_iter(self):
         self.train_loader_iter = self.train_loader.__iter__()
@@ -49,7 +50,7 @@ class Worker_Vision:
         loss.backward()
         # self.optimizer.step()
     
-    def step_prox(self,mu):
+    def step_prox(self,server,mu):
         self.model.train()
 
         batch = next(self.train_loader_iter)
@@ -80,7 +81,6 @@ class Worker_Vision:
         self.optimizer.zero_grad()
         criterion(self.model(data),target).backward()
         self.sam_optimizer.descent_step()
-
                     
     def step_samprox(self,mu):
         self.model.train()
@@ -93,6 +93,7 @@ class Worker_Vision:
         loss.backward() # gradient 구함.
         self.sam_optimizer.ascent_step()
         
+        
         self.optimizer.zero_grad()
         criterion(self.model(data),target).backward() # gradient
 
@@ -101,77 +102,6 @@ class Worker_Vision:
                 continue
             p.grad.add_(mu*(p.data-self.localprox[n].data))
          
-        self.sam_optimizer.descent_step()
-
-    def step_proxVR(self,mu):
-        
-        self.sam_optimizer.ascent_step()
-        
-        self.optimizer.zero_grad()
-        criterion(self.model(data),target).backward() # gradient
-
-        self.sam_optimizer.descent_step()
-        
-        for n, p in self.model.named_parameters():
-            if p.grad is None:
-                continue
-            p.grad.add_(mu*(p.data-self.localprox[n].data))
-
-    def step_VRSAM(self,mu):
-        
-        self.sam_optimizer.ascent_step()
-        
-        self.optimizer.zero_grad()
-        criterion(self.model(data),target).backward() # gradient
-
-        self.sam_optimizer.descent_step()
-
-
-    def step_samprox_scheduling(self,mu):
-        self.model.train()
-
-        batch = next(self.train_loader_iter)
-        data, target = batch[0].to(self.device), batch[1].to(self.device)
-        output = self.model(data)
-        loss = criterion(output, target)
-        self.optimizer.zero_grad()
-        loss.backward() # gradient 구함.
-        self.sam_optimizer.update_rho()
-        self.sam_optimizer.ascent_step()
-
-
-        self.optimizer.zero_grad()
-        criterion(self.model(data),target).backward() # gradient
-
-        self.sam_optimizer.descent_step()
-
-        for n, p in self.model.named_parameters():
-            if p.grad is None:
-                continue
-            p.grad.add_(mu*(p.data-self.localprox[n].data))
-            
-        
-    
-    def step_samADMM(self,mu):
-        self.model.train()
-        
-        batch = next(self.train_loader_iter)
-        data, target = batch[0].to(self.device), batch[1].to(self.device)
-        output = self.model(data)
-        loss = criterion(output, target)
-        self.optimizer.zero_grad()
-        loss.backward() # gradient 구함.
-        self.sam_optimizer.ascent_step()
-        
-        
-        self.optimizer.zero_grad()
-        criterion(self.model(data),target).backward() # gradient
-
-        for n, p in self.model.named_parameters():
-            if p.grad is None:
-                continue
-            p.grad.add_(mu*(p.data-self.localprox[n].data) + self.dual_y[n]*(p.data))
-            
         self.sam_optimizer.descent_step()
 
     def step_csgd(self):
@@ -199,7 +129,7 @@ class Worker_Vision:
         self.scheduler.step()
 
     def update_localprox(self):
-        self.localprox =self.model.state_dict()
+        self.localprox = model.state_dict()
 
 from torch.cuda.amp.grad_scaler import GradScaler
 scaler = GradScaler()

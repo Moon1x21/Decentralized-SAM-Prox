@@ -20,7 +20,7 @@ smaproxloss = SAMProxLoss()
 
 class Worker_Vision:
     def __init__(self, model, rank, optimizer, scheduler, eta, rho,
-                 train_loader, device, sam=False, scheduling='base'):       
+                 train_loader, device, optimization='base', scheduling='base'):       
         self.model = model
         self.rank = rank
         self.optimizer = optimizer
@@ -29,11 +29,20 @@ class Worker_Vision:
         self.train_loader_iter = train_loader.__iter__()
         self.device = device
         self.localprox = model.state_dict()
-
-        if(sam):
+        self.optimization = optimization
+        # import pdb; pdb.set_trace()
+        if(self.optimization in ['sam','samprox','samAdmm']):
             self.rho = rho
             self.eta = eta
             self.sam_optimizer = SAM(self.optimizer, self.model, self.rho, self.eta, scheduling)
+        
+            if(self.optimization == 'samAdmm'):
+                temp = copy.deepcopy(self.model)
+                for p in temp.parameters():
+                    p = 0
+                self.dual_y = copy.deepcopy(temp.state_dict())
+                self.dual_z = copy.deepcopy(temp.state_dict())
+       
         
     def update_iter(self):
         self.train_loader_iter = self.train_loader.__iter__()
@@ -80,7 +89,6 @@ class Worker_Vision:
         self.optimizer.zero_grad()
         criterion(self.model(data),target).backward()
         self.sam_optimizer.descent_step()
-
                     
     def step_samprox(self,mu):
         self.model.train()
@@ -93,6 +101,7 @@ class Worker_Vision:
         loss.backward() # gradient 구함.
         self.sam_optimizer.ascent_step()
         
+        
         self.optimizer.zero_grad()
         criterion(self.model(data),target).backward() # gradient
 
@@ -102,30 +111,6 @@ class Worker_Vision:
             p.grad.add_(mu*(p.data-self.localprox[n].data))
          
         self.sam_optimizer.descent_step()
-
-    def step_proxVR(self,mu):
-        
-        self.sam_optimizer.ascent_step()
-        
-        self.optimizer.zero_grad()
-        criterion(self.model(data),target).backward() # gradient
-
-        self.sam_optimizer.descent_step()
-        
-        for n, p in self.model.named_parameters():
-            if p.grad is None:
-                continue
-            p.grad.add_(mu*(p.data-self.localprox[n].data))
-
-    def step_VRSAM(self,mu):
-        
-        self.sam_optimizer.ascent_step()
-        
-        self.optimizer.zero_grad()
-        criterion(self.model(data),target).backward() # gradient
-
-        self.sam_optimizer.descent_step()
-
 
     def step_samprox_scheduling(self,mu):
         self.model.train()
@@ -143,14 +128,12 @@ class Worker_Vision:
         self.optimizer.zero_grad()
         criterion(self.model(data),target).backward() # gradient
 
-        self.sam_optimizer.descent_step()
-
         for n, p in self.model.named_parameters():
             if p.grad is None:
                 continue
             p.grad.add_(mu*(p.data-self.localprox[n].data))
             
-        
+        self.sam_optimizer.descent_step()
     
     def step_samADMM(self,mu):
         self.model.train()
@@ -173,6 +156,9 @@ class Worker_Vision:
             p.grad.add_(mu*(p.data-self.localprox[n].data) + self.dual_y[n]*(p.data))
             
         self.sam_optimizer.descent_step()
+
+        self.update_dualy(mu)
+
 
     def step_csgd(self):
         self.model.train()
@@ -198,8 +184,15 @@ class Worker_Vision:
     def scheduler_step(self):
         self.scheduler.step()
 
-    def update_localprox(self):
-        self.localprox =self.model.state_dict()
+    def update_dualy(self,mu): 
+        for n, p in self.model.named_parameters():
+            self.dual_y[n] += mu * (p.data-self.dual_y[n].data)
+
+    # def update_dualz(self,mu,worker_list,W):
+    #     for n,p in self.mdoel.named_parameters():
+    #         for worker in range(worker_list):
+    #             w = P_perturbed[worker.rank][i]
+    #             self.dual_z[n] += mu * w * ( self.localprox[n].data - worker.localprox[n].data)
 
 from torch.cuda.amp.grad_scaler import GradScaler
 scaler = GradScaler()

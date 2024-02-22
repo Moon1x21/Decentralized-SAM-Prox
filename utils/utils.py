@@ -67,9 +67,7 @@ def add_identity(args, dir_path):
                      f"lr{args.lr}-"+ 
                      f"{args.warmup_step}-"+ 
                      f"epoch{args.epoch}-"+      
-                     f"{args.optimization}_"+
-                     f"mgsStep_{args.gossip_step}-"+
-                     f"mlg_{args.multiple_local_gossip}"
+                     f"{args.optimization}_"
                      )       
     args.logs_perf_dir = os.path.join(dir_path,'logs_perf')
     if not os.path.exists(args.logs_perf_dir):
@@ -90,12 +88,6 @@ def add_identity(args, dir_path):
         os.mkdir(args.runs_data_dir) 
 
     return args
-
-def wandb_get_argumet():
-    args = {
-
-    }
-
 
 def eval_vision_tf(model, train_loader, valid_loader, epoch, iteration, tb, device):
     criterion=nn.CrossEntropyLoss()
@@ -149,7 +141,7 @@ def eval_vision_tf(model, train_loader, valid_loader, epoch, iteration, tb, devi
 
     return total_train_acc, total_train_loss, total_valid_acc, total_valid_loss
 
-def eval_vision(model, train_loader, valid_loader, epoch, iteration, wandb, device):
+def eval_vision(model, train_loader, valid_loader, epoch, iteration, wandb, device, debug):
     criterion=nn.CrossEntropyLoss()
     model.eval()
 
@@ -186,22 +178,23 @@ def eval_vision(model, train_loader, valid_loader, epoch, iteration, wandb, devi
     total_valid_loss = total_loss / step
     total_valid_acc = total_correct / total
 
-    if epoch is None:
-        wandb.log({
-            'valid loss - train loss': total_valid_loss - total_train_loss,
-            'valid loss': total_valid_loss,
-            'train loss': total_train_loss,
-            'valid acc':total_valid_acc,
-            'train acc':total_train_acc
-        })
-    else:
-        wandb.log({
-            'valid loss - train loss': total_valid_loss - total_train_loss,
-            'valid loss': total_valid_loss,
-            'train loss': total_train_loss,
-            'valid acc':total_valid_acc,
-            'train acc':total_train_acc
-        })
+    if(not debug):
+        if epoch is None:
+            wandb.log({
+                'valid loss - train loss': total_valid_loss - total_train_loss,
+                'valid loss': total_valid_loss,
+                'train loss': total_train_loss,
+                'valid acc':total_valid_acc,
+                'train acc':total_train_acc,
+            })
+        else:
+            wandb.log({
+                'valid loss - train loss': total_valid_loss - total_train_loss,
+                'valid loss': total_valid_loss,
+                'train loss': total_train_loss,
+                'valid acc':total_valid_acc,
+                'train acc':total_train_acc
+            })
 
     return total_train_acc, total_train_loss, total_valid_acc, total_valid_loss
 

@@ -1,27 +1,21 @@
 import torch 
-import numpy as np
 from collections import defaultdict
-
+import pdb
+import numpy as np
 class ASAM:
-    def __init__(self, optimizer, model, rho=0.5, eta=0.01, scheduling='base'):
+    def __init__(self, optimizer, model, rho_list, eta=0.01):
         self.optimizer = optimizer
         self.model = model
+        self.rho_list = rho_list
+        self.index = 0
+        self.rho = self.rho_list[0]
         self.eta = eta
         self.state = defaultdict(dict)
-        self.scheduler = scheduling
-        if(self.scheduler != 'base'):
-            if(self.scheduler == 'log'):
-                self.rho_list = np.round(np.logspace(-1.3,-0.3, 10),3)
-            elif(self.scheduler == 'step'):
-                self.rho_list = np.clip(np.array([rho * round(pow(0.1,(1-int(i / (5000 / 2)))),2) for i in range(5000)]),0,1)
-            self.index = 0
-            self.rho = self.rho_list[0]
-        else:
-            self.rho = rho
-               
+        
+
     @torch.no_grad()
     def ascent_step(self):
-        # print('defaulstate:', self.state.keys())
+        # print('defaulstate:', self.state.keys())]
         wgrads = []
         for n, p in self.model.named_parameters():
             if p.grad is None:
@@ -46,11 +40,9 @@ class ASAM:
             eps[...] = p.grad[...]
             eps.mul_(self.rho / wgrad_norm)
             p.add_(eps)
-
-        #update rho
-        if(self.scheduler != 'base'):
-            self.index += 1
-            self.rho = self.rho_list[self.index]
+        self.index += 1
+        self.rho = self.rho_list[self.index]
+        
 
     @torch.no_grad()
     def descent_step(self):
@@ -60,12 +52,12 @@ class ASAM:
             p.sub_(self.state[p]["eps"])
         
         # self.optimizer.step()
-
         
         
 class SAM(ASAM):
     @torch.no_grad()
     def ascent_step(self):
+        # pdb.set_trace()
         grads = []
         for n, p in self.model.named_parameters():
             if p.grad is None:
@@ -82,3 +74,7 @@ class SAM(ASAM):
             eps[...] = p.grad[...]
             eps.mul_(self.rho / grad_norm)
             p.add_(eps)
+
+        self.index += 1
+        self.rho = self.rho_list[self.index]
+        

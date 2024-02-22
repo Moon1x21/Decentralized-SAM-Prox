@@ -11,7 +11,7 @@ from torch.optim import SGD
 from torch.optim.lr_scheduler import MultiStepLR
 from datasets import load_dataset
 from networks import load_model
-from workers.worker_vision import *
+from workers.worker_vision_admm import *
 from utils.scheduler import *
 from utils.utils import *
 from utils.minimizers import SAM
@@ -70,9 +70,9 @@ def main(args):
             worker = Worker_Vision_AMP(model, rank, optimizer, scheduler, train_loader, args.device)
         else:
             if args.optimization == "base":
-                worker = Worker_Vision(model, rank, optimizer, scheduler, args.eta, args.rho, train_loader, args.device, False)
+                worker = Worker_Vision(model, rank, optimizer, scheduler, args.eta, args.rho, train_loader, args.device, args.optimization)
             else:
-                worker = Worker_Vision(model, rank, optimizer, scheduler, args.eta, args.rho, train_loader, args.device, True, args.sam_scheduler)
+                worker = Worker_Vision(model, rank, optimizer, scheduler, args.eta, args.rho, train_loader, args.device, args.optimization, args.sam_scheduler)
         #worker_list.append(DDP(worker, device_ids=[gpu_id]]))
         worker_list.append(worker)
 
@@ -87,12 +87,12 @@ def main(args):
     for epoch in range(args.epoch):  
         for worker in worker_list:
             worker.update_iter()  
-            if(args.optimization == 'samAdmm'):
-                dual_y_list = []
-                dual_z_list = []
-                for worker in worker_list:
-                    dual_y_list.append(worker.dual_y.state_dict())
-                    dual_z_list.append(worker.dual_y.state_dict()) 
+            # if(args.optimization == 'samAdmm'):
+            #     dual_y_list = []
+            #     dual_z_list = []
+            #     for worker in worker_list:
+            #         dual_y_list.append(worker.dual_y)
+            #         dual_z_list.append(worker.dual_z) 
         for _ in range(train_loader.__len__()):
             if args.mode == 'csgd':
                 for worker in worker_list:
@@ -106,20 +106,6 @@ def main(args):
                 elif args.shuffle == "fixed":
                     P_perturbed = P
                 model_dict_list = []
-
-                if('VRSAM' in args.optimization):
-                    worker_gradient = []
-                    for worker in worker_list:
-                        worker.step()
-                        grad_dict = {k:v.grad for k,v in worker.model.named_parameters()}
-                        worker_gradient.append(grad_dict)
-                    
-                    for worker in worker_list:
-                        for name, param in worker.model.named_parameters():
-                            param.grad = torch.zeros_like(param.grad)
-                            for i in range(args.size):
-                                p = P_perturbed[worker.rank][i]
-                                param.grad += worker_gradient[i][name] * p  # gossip algorithm. 
                   
                 # t+1/2 step
                 for worker in worker_list:
@@ -139,30 +125,36 @@ def main(args):
                         worker.step_samprox(args.mu)
 
                     elif(args.optimization == 'samAdmm'):
-                        worker.step_samAdmm(args.mu)
-                    
-                    elif(args.optimization == 'VRSAMProx'):
-                        worker.step_proxVR(args.mu)
-
-                    elif(args.optimization == 'VRSAM'):
-                        worker.step_VRSAM(args.mu)
-    
+                        worker.step_samADMM(args.mu)
+                        
                         
                     worker.update_grad() # -gradient
                     model_dict_list.append(worker.model.state_dict()) # update된 model weigth 들어감,
                 
                 #t+1 step
                 if((iteration % args.local_iter == 0)):
+                    local_prox_list = []
                     for worker in worker_list:
                         for name, param in worker.model.named_parameters():
                             param.data = torch.zeros_like(param.data)
                             for i in range(args.size):
                                 p = P_perturbed[worker.rank][i]
                                 param.data += model_dict_list[i][name].data * p  # gossip algorithm.  
-                               
-                        worker.update_localprox()
                         
-                                            
+                        local_prox_list.append(worker.model.state_dict())                         
+            
+                    if(args.optimization == 'samAdmm'):
+                        for worker in worker_list:
+                            for name, param in worker.model.named_parameters():
+                                for i in range(args.size):
+                                    p = P_perturbed[worker.rank][i]
+                                    worker.localprox[name].data += (local_prox_list[i][name].data + (1/args.mu) * (worker_list[i].dual_y[name].data + worker_list[i].dual_z[name].data)) * p  # gossip algorithm.  
+                        
+                        for worker in worker_list:
+                            for n,p in worker.model.named_parameters():
+                                for i in range(args.size):
+                                    w = P_perturbed[worker.rank][i]
+                                    worker.dual_z[n] += args.mu * w * ( worker.localprox[n].data - worker.localprox[n].data)                               
 
             # Main virutal global model update and calculating consensus distance
             center_model = CalculateCenter(center_model, worker_list, args.size)
@@ -182,7 +174,7 @@ def main(args):
                         f'valid loss:{valid_loss:.4}, acc:{valid_acc:.4%}.',
                         flush=True, end="\n")
                 
-                if(args.optimization == ('sam' or 'samprox') and args.sam_scheduler != 'base'):
+                if(args.optimization in ['sam','samprox'] and args.sam_scheduler != 'base'):
                     wandb.log({'rho':worker_list[0].sam_optimizer.rho})
 
                 if temp_valid < valid_acc :
@@ -254,7 +246,7 @@ if __name__=='__main__':
     parser.add_argument("--pretrained", type=int, default=0)
 
     #optimization
-    parser.add_argument("--optimization", type=str, default='base', choices=['base', 'prox','sam', 'samprox','VRSAM'])
+    parser.add_argument("--optimization", type=str, default='base', choices=['base', 'prox','sam', 'samprox', 'samAdmm'])
 
     #SAM parameter
     parser.add_argument('--eta', type=float, default=0.01, help='eta value')
