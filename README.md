@@ -1,4 +1,4 @@
-#Postech 2023-2 Deeplearning Final Project
+# Postech 2023-2 Deeplearning Final Project
 
 ## Environment Setup
 Requisite packages can be installed directly from the `requirements.txt`.
